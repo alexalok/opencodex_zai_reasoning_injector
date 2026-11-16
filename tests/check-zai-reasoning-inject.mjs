@@ -25,9 +25,19 @@ assert.deepEqual(tx({input: [user('x<reasoning> </reasoning>')]}).input, [user('
 const fc = {type: 'function_call', call_id: 'c', name: 'exec', arguments: '{}'}, fco = {type: 'function_call_output', call_id: 'c', output: 'ok'};
 assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), R0('real'), fc, fco]}).input, [user('q'), R0('real'), fc, fco]);
 assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), fc, fco]}).input, [user('q'), fc, fco]);
-// Later conversation turn: earlier prompt's tag also stripped so history matches turn 1 and never leaks.
+// Later conversation turn: first-turn tag only stripped; later-turn tag becomes reasoning just before its message.
 const asst = {type: 'message', role: 'assistant', content: [{type: 'output_text', text: 'done'}]};
-assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), asst, user('next<reasoning>u</reasoning>')]}).input, [user('q'), asst, user('next')]);
+assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), asst, user('next<reasoning>u</reasoning>')]}).input, [user('q'), asst, R0('u'), user('next')]);
+// Not only the last user message: every later-turn tagged message, replayed on each request, keeps its injection.
+assert.deepEqual(tx({input: [user('q'), asst, user('a<reasoning>u1</reasoning>'), R0('real'), fc, fco, asst, user('b<reasoning>u2</reasoning>'), dev('env')]}).input,
+  [user('q'), asst, R0('u1'), user('a'), R0('real'), fc, fco, asst, R0('u2'), user('b'), dev('env')]);
+// A model output item without an assistant message also starts a later turn.
+assert.deepEqual(tx({input: [user('q'), fc, fco, user('<reasoning>u</reasoning>more')]}).input, [user('q'), fc, fco, R0('u'), user('more')]);
+// Tag-only later message: message dropped, reasoning kept in its place. Empty block: strip only.
+assert.deepEqual(tx({input: [user('q'), asst, user('<reasoning>only</reasoning>'), dev('d')]}).input, [user('q'), asst, R0('only'), dev('d')]);
+assert.deepEqual(tx({input: [user('q'), asst, user('x<reasoning> </reasoning>')]}).input, [user('q'), asst, user('x')]);
+// Multiple blocks in one later message are joined.
+assert.deepEqual(tx({input: [user('q'), asst, user('<reasoning>a</reasoning>x<reasoning>b</reasoning>')]}).input, [user('q'), asst, R0('a\n\nb'), user('x')]);
 // Tag in a developer message is not touched.
 assert.equal(tx({input: [dev('<reasoning>t</reasoning>'), user('q')]}), null);
 

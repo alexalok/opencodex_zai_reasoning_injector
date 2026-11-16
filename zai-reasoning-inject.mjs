@@ -1,10 +1,12 @@
-// OpenCodex plugin: synthetic first-turn reasoning for Z.AI Responses requests.
+// OpenCodex plugin: synthetic reasoning for Z.AI Responses requests.
 //
-// The last input item with role "user" may carry <reasoning>TEXT</reasoning>. Every such block
-// is removed from every user message before the request leaves the proxy. On the first turn
-// (no assistant message and no model output item in input yet) the blocks of the last user
-// message are appended as one reasoning item followed by user messages "<turn_interrupted/>" and
-// "Continue". This supplies context; it does not guarantee continuation of that text.
+// User messages may carry <reasoning>TEXT</reasoning>. Every such block is removed from every
+// user message before the request leaves the proxy. On the first turn (no assistant message and
+// no model output item in input yet) the blocks of the last user message are appended as one
+// reasoning item followed by user messages "<turn_interrupted/>" and "Continue". A user message
+// in a later turn (some assistant message or model output item precedes it) gets its blocks as a
+// reasoning item inserted just before it, on every request that replays it. This supplies
+// context; it does not guarantee continuation of that text.
 //
 // Upstream hooks can only change URL and headers, so Z.AI Responses sends are routed through a
 // loopback relay in this process that rewrites the JSON body and forwards it over TLS. Create
@@ -33,6 +35,7 @@ export const TRANSFORMS = Symbol.for('opencodex.zai.requestTransforms');
 export const CAPTURE_ACTIVE = Symbol.for('opencodex.zai.captureActive');
 
 const userText = text => ({type: 'message', role: 'user', content: [{type: 'input_text', text}]});
+const reasoningItem = blocks => ({type: 'reasoning', summary: [], content: [{type: 'reasoning_text', text: blocks.join('\n\n')}], encrypted_content: null});
 const isUser = item => item && typeof item === 'object' && item.role === 'user';
 
 /** Returns { content, blocks } with tags removed, or null when the content has no tag. */
@@ -64,26 +67,29 @@ export function transformResponsesBody(body) {
   let last = -1;
   for (let i = input.length - 1; i >= 0; i--) if (isUser(input[i])) { last = i; break; }
   if (last < 0) return null;
-  const firstTurn = !input.some(item => item && typeof item === 'object'
-    && (item.role === 'assistant' || (item.type !== undefined && item.type !== 'message')));
-  let changed = false, injected = [];
+  const isModelTurn = item => item && typeof item === 'object'
+    && (item.role === 'assistant' || (item.type !== undefined && item.type !== 'message'));
+  const firstTurn = !input.some(isModelTurn);
+  let changed = false, injected = [], laterTurn = false;
   const next = [];
   input.forEach((item, i) => {
     const stripped = isUser(item) ? stripContent(item.content) : null;
-    if (!stripped) { next.push(item); return; }
-    changed = true;
-    if (i === last) injected = stripped.blocks.map(text => text.trim()).filter(Boolean);
-    if (!stripped.empty) next.push({...item, content: stripped.content});
+    if (stripped) {
+      changed = true;
+      const blocks = stripped.blocks.map(text => text.trim()).filter(Boolean);
+      // Later-turn message: the reasoning goes just before it, where Z.AI keeps it as part of the
+      // preceding assistant turn. Replayed history carries the tag, so every request repeats it.
+      if (laterTurn && blocks.length) next.push(reasoningItem(blocks));
+      else if (i === last) injected = blocks;
+      if (!stripped.empty) next.push({...item, content: stripped.content});
+    } else next.push(item);
+    if (isModelTurn(item)) laterTurn = true;
   });
   if (!changed) return null;
   if (firstTurn && injected.length) {
     // Z.AI drops reasoning that follows the last user message. Placed before a user message it is
     // kept as a finished assistant turn, so frame it as an interrupted turn the user resumes.
-    next.push(
-      {type: 'reasoning', summary: [], content: [{type: 'reasoning_text', text: injected.join('\n\n')}], encrypted_content: null},
-      userText('<turn_interrupted/>'),
-      userText('Continue'),
-    );
+    next.push(reasoningItem(injected), userText('<turn_interrupted/>'), userText('Continue'));
   }
   return {...body, input: next};
 }

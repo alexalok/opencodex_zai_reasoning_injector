@@ -24,11 +24,18 @@ The token changes on each plugin installation. Queries are preserved.
    two newlines. First turn means no assistant-role item and no explicitly typed
    non-message item (such as `reasoning` or `function_call`) in `input`.
 3. Append a reasoning item, followed by user messages `<turn_interrupted/>` and
-   `Continue`. On later turns, only strip the tags; do not inject new reasoning.
+   `Continue`.
+4. For a user message in a later turn (an assistant-role item or typed non-message
+   item comes before it in `input`), insert its trimmed, joined blocks as a
+   reasoning item **just before that message**. This applies to every such message,
+   not only the last one, so replayed history gets the same insertion on every
+   request.
 
-Text parts or messages emptied by stripping are removed. Other content, including
-images and developer messages, is preserved. If the last user item has no
-nonempty reasoning blocks, nothing is injected, even if earlier users had blocks.
+Text parts or messages emptied by stripping are removed; a later-turn reasoning
+item stays in the removed message's place. Other content, including images and
+developer messages, is preserved. Blocks in first-turn user messages other than
+the last one, and blocks in first-turn messages once the conversation has moved
+on, are only stripped.
 The original parsed object is not mutated.
 
 OpenCodex's `ctx.registerUpstreamRewriter(fn)` can change URLs and headers but not
@@ -101,7 +108,7 @@ The upstream input contains the cleaned user prompt and then:
 ]
 ```
 
-The plugin does not hide this text from Z.AI. First-turn blocks are sent as
+The plugin does not hide this text from Z.AI. Blocks are sent as
 reasoning context; treat them as provider-bound prompt data, not secrets.
 
 ## Disable or remove
@@ -138,6 +145,10 @@ the Responses API, not guarantees of future provider behavior:
 - The model starts a new reasoning pass, rather than continuing mid-sentence.
   It may treat `Continue` as a new instruction. The appended messages change
   conversation semantics and can affect output and token cost.
+- Reasoning inserted before a later user message, after a finished assistant
+  reply, was retained (42 → 72 input tokens). When it contradicted the visible
+  earlier reply, the model usually followed the visible reply (1/6 followed the
+  reasoning).
 
 The plugin does not handle Chat Completions, WebSockets, alternate provider
 hosts/paths, compressed request bodies, or string-valued `input`. Invalid JSON
