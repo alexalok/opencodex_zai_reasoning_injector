@@ -1,12 +1,12 @@
 // OpenCodex plugin: synthetic reasoning for Z.AI Responses requests.
 //
 // User messages may carry <reasoning>TEXT</reasoning>. Every such block is removed from every
-// user message before the request leaves the proxy. On the first turn (no assistant message and
-// no model output item in input yet) the blocks of the last user message are appended as one
-// reasoning item followed by user messages "<turn_interrupted/>" and "Continue". A user message
-// in a later turn (some assistant message or model output item precedes it) gets its blocks as a
-// reasoning item inserted just before it, on every request that replays it. This supplies
-// context; it does not guarantee continuation of that text.
+// user message before the request leaves the proxy, and re-injected on every request that
+// replays the message. Blocks of first-turn user messages (those before the first assistant
+// message or model output item in input) become one reasoning item followed by user messages
+// "<turn_interrupted/>" and "Continue", placed at the end of the first turn. A user message in a
+// later turn gets its blocks as a reasoning item inserted just before it. This supplies context;
+// it does not guarantee continuation of that text.
 //
 // Upstream hooks can only change URL and headers, so Z.AI Responses sends are routed through a
 // loopback relay in this process that rewrites the JSON body and forwards it over TLS. Create
@@ -18,7 +18,8 @@ import {randomBytes} from 'node:crypto';
 const HOST = 'api.z.ai';
 const PATH = '/api/v1/responses';
 const MAX = 64 * 1024 * 1024;
-const TAG = /<reasoning>([\s\S]*?)<\/reasoning>/g;
+// Some clients escape the tags as Markdown (\<reasoning>...\</reasoning>); the backslashes go too.
+const TAG = /\\?<reasoning>([\s\S]*?)\\?<\/reasoning>/g;
 const HOP = ['connection', 'transfer-encoding', 'keep-alive', 'upgrade', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer'];
 
 function forwardHeaders(source) {
@@ -64,33 +65,34 @@ function stripContent(content) {
 export function transformResponsesBody(body) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.input)) return null;
   const input = body.input;
-  let last = -1;
-  for (let i = input.length - 1; i >= 0; i--) if (isUser(input[i])) { last = i; break; }
-  if (last < 0) return null;
   const isModelTurn = item => item && typeof item === 'object'
     && (item.role === 'assistant' || (item.type !== undefined && item.type !== 'message'));
-  const firstTurn = !input.some(isModelTurn);
-  let changed = false, injected = [], laterTurn = false;
+  // Everything before the first model item is the first turn. Clients replay the tagged prompt on
+  // every request, so the same items must be rebuilt at the same place each time.
+  let firstModel = input.findIndex(isModelTurn);
+  if (firstModel < 0) firstModel = input.length;
+  let changed = false;
+  const firstTurn = [];
   const next = [];
+  // Z.AI drops reasoning that follows the last user message. Placed before a user message it is
+  // kept as a finished assistant turn, so frame it as an interrupted turn the user resumes.
+  const closeFirstTurn = () => {
+    if (firstTurn.length) next.push(reasoningItem(firstTurn), userText('<turn_interrupted/>'), userText('Continue'));
+  };
   input.forEach((item, i) => {
+    if (i === firstModel) closeFirstTurn();
     const stripped = isUser(item) ? stripContent(item.content) : null;
-    if (stripped) {
-      changed = true;
-      const blocks = stripped.blocks.map(text => text.trim()).filter(Boolean);
-      // Later-turn message: the reasoning goes just before it, where Z.AI keeps it as part of the
-      // preceding assistant turn. Replayed history carries the tag, so every request repeats it.
-      if (laterTurn && blocks.length) next.push(reasoningItem(blocks));
-      else if (i === last) injected = blocks;
-      if (!stripped.empty) next.push({...item, content: stripped.content});
-    } else next.push(item);
-    if (isModelTurn(item)) laterTurn = true;
+    if (!stripped) { next.push(item); return; }
+    changed = true;
+    const blocks = stripped.blocks.map(text => text.trim()).filter(Boolean);
+    if (i < firstModel) firstTurn.push(...blocks);
+    // Later-turn message: the reasoning goes just before it, where Z.AI keeps it as part of the
+    // preceding assistant turn.
+    else if (blocks.length) next.push(reasoningItem(blocks));
+    if (!stripped.empty) next.push({...item, content: stripped.content});
   });
   if (!changed) return null;
-  if (firstTurn && injected.length) {
-    // Z.AI drops reasoning that follows the last user message. Placed before a user message it is
-    // kept as a finished assistant turn, so frame it as an interrupted turn the user resumes.
-    next.push(reasoningItem(injected), userText('<turn_interrupted/>'), userText('Continue'));
-  }
+  if (firstModel === input.length) closeFirstTurn();
   return {...body, input: next};
 }
 
