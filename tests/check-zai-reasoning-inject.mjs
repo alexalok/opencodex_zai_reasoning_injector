@@ -21,13 +21,21 @@ assert.deepEqual(tx({input: [dev('s'), user('<reasoning>only</reasoning>')]}).in
 // Multiple blocks joined; empty block injects nothing.
 assert.deepEqual(tx({input: [user('<reasoning>a</reasoning>x<reasoning>b</reasoning>')]}).input, [user('x'), ...R('a\n\nb')]);
 assert.deepEqual(tx({input: [user('x<reasoning> </reasoning>')]}).input, [user('x')]);
-// Later step of the same turn (model output present, even without an assistant message): strip, no injection.
+// Later step of the same turn (model output present, even without an assistant message): the
+// replayed first-turn prompt gets the same items again, just before the first model item.
 const fc = {type: 'function_call', call_id: 'c', name: 'exec', arguments: '{}'}, fco = {type: 'function_call_output', call_id: 'c', output: 'ok'};
-assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), R0('real'), fc, fco]}).input, [user('q'), R0('real'), fc, fco]);
-assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), fc, fco]}).input, [user('q'), fc, fco]);
-// Later conversation turn: first-turn tag only stripped; later-turn tag becomes reasoning just before its message.
+assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), R0('real'), fc, fco]}).input, [user('q'), ...R('t'), R0('real'), fc, fco]);
+assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), fc, fco]}).input, [user('q'), ...R('t'), fc, fco]);
+// Later conversation turn: both injections are rebuilt, each by its own rule.
 const asst = {type: 'message', role: 'assistant', content: [{type: 'output_text', text: 'done'}]};
-assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), asst, user('next<reasoning>u</reasoning>')]}).input, [user('q'), asst, R0('u'), user('next')]);
+assert.deepEqual(tx({input: [user('q<reasoning>t</reasoning>'), asst, user('next<reasoning>u</reasoning>')]}).input, [user('q'), ...R('t'), asst, R0('u'), user('next')]);
+// The replayed first turn is a byte-identical prefix of the first request, developer messages included.
+const first = [dev('sys'), user('q<reasoning>t</reasoning>'), dev('after')];
+const firstOut = tx({input: first}).input;
+assert.deepEqual(firstOut, [dev('sys'), user('q'), dev('after'), ...R('t')]);
+assert.deepEqual(tx({input: [...first, R0('real'), asst, user('next'), dev('env')]}).input, [...firstOut, R0('real'), asst, user('next'), dev('env')]);
+// Markdown-escaped tags, as some clients send them, leave no backslash behind.
+assert.deepEqual(tx({input: [user('how are you? \\<reasoning>fine\\</reasoning>\n')]}).input, [user('how are you? \n'), ...R('fine')]);
 // Not only the last user message: every later-turn tagged message, replayed on each request, keeps its injection.
 assert.deepEqual(tx({input: [user('q'), asst, user('a<reasoning>u1</reasoning>'), R0('real'), fc, fco, asst, user('b<reasoning>u2</reasoning>'), dev('env')]}).input,
   [user('q'), asst, R0('u1'), user('a'), R0('real'), fc, fco, asst, R0('u2'), user('b'), dev('env')]);
@@ -41,11 +49,11 @@ assert.deepEqual(tx({input: [user('q'), asst, user('<reasoning>a</reasoning>x<re
 // Tag in a developer message is not touched.
 assert.equal(tx({input: [dev('<reasoning>t</reasoning>'), user('q')]}), null);
 
-// Earlier users are stripped, but only the last user's blocks are injected.
+// Every first-turn user message contributes its blocks, joined in order.
 assert.deepEqual(tx({input: [user('old<reasoning>old</reasoning>'), user('new')]}).input,
-  [user('old'), user('new')]);
+  [user('old'), user('new'), ...R('old')]);
 assert.deepEqual(tx({input: [user('old<reasoning>old</reasoning>'), user('new<reasoning>new</reasoning>')]}).input,
-  [user('old'), user('new'), ...R('new')]);
+  [user('old'), user('new'), ...R('old\n\nnew')]);
 // Multimodal content survives, and the input object is not mutated.
 const image = {type: 'input_image', image_url: 'https://example.com/image.png'};
 const original = {input: [{role: 'user', content: [{type: 'input_text', text: '<reasoning>t</reasoning>'}, image]}]};

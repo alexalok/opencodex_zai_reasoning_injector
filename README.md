@@ -18,25 +18,26 @@ accepts only POST requests to that exact path behind a random 256-bit path token
 The token changes on each plugin installation. Queries are preserved.
 
 1. Remove every complete, case-sensitive `<reasoning>...</reasoning>` block from
-   every user-role message's string content or `input_text`/`text` parts.
-2. On the first turn, collect blocks from the **last user-role item**, even if a
-   developer message follows it. Trim the blocks and join nonempty blocks with
-   two newlines. First turn means no assistant-role item and no explicitly typed
-   non-message item (such as `reasoning` or `function_call`) in `input`.
-3. Append a reasoning item, followed by user messages `<turn_interrupted/>` and
-   `Continue`.
-4. For a user message in a later turn (an assistant-role item or typed non-message
-   item comes before it in `input`), insert its trimmed, joined blocks as a
-   reasoning item **just before that message**. This applies to every such message,
-   not only the last one, so replayed history gets the same insertion on every
-   request.
+   every user-role message's string content or `input_text`/`text` parts. A backslash
+   directly before either tag (`\<reasoning>...\</reasoning>`, as some clients escape
+   Markdown) is removed with it.
+2. The first turn is everything before the first assistant-role item or explicitly
+   typed non-message item (such as `reasoning` or `function_call`) in `input`; with
+   no such item, it is the whole `input`. Collect blocks from **every user-role item**
+   in the first turn. Trim the blocks and join nonempty blocks with two newlines.
+3. At the end of the first turn (after any developer message that follows the
+   prompt), insert a reasoning item, followed by user messages
+   `<turn_interrupted/>` and `Continue`.
+4. For a user message in a later turn, insert its trimmed, joined blocks as a
+   reasoning item **just before that message**.
+
+Both rules apply to every tagged message on every request. Clients replay the
+original prompts, tags included, so each request rebuilds the same items in the
+same places and the earlier part of the conversation stays byte-identical.
 
 Text parts or messages emptied by stripping are removed; a later-turn reasoning
 item stays in the removed message's place. Other content, including images and
-developer messages, is preserved. Blocks in first-turn user messages other than
-the last one, and blocks in first-turn messages once the conversation has moved
-on, are only stripped.
-The original parsed object is not mutated.
+developer messages, is preserved. The original parsed object is not mutated.
 
 OpenCodex's `ctx.registerUpstreamRewriter(fn)` can change URLs and headers but not
 request bodies. The plugin therefore starts an ephemeral `Bun.serve` relay on
