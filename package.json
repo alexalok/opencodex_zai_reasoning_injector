@@ -1,0 +1,11 @@
+{
+  "name": "opencodex-zai-reasoning-injector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic first-turn reasoning context for Z.AI Responses requests through OpenCodex",
+  "license": "MIT",
+  "scripts": {
+    "test": "bun tests/check-zai-reasoning-inject.mjs"
+  }
+}
